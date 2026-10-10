@@ -51,6 +51,18 @@ background:radial-gradient(circle at center,rgba(255,0,0,0) 45%,rgba(255,0,40,.5
 letter-spacing:3px;text-shadow:0 0 12px #ff0022;display:none;animation:pulse .8s infinite}
 @keyframes pulse{0%,100%{opacity:.55}50%{opacity:1}}
 #turn-hint{position:absolute;top:57%;left:50%;transform:translate(-50%,-50%);color:#ffcc00;font-size:14px;background:rgba(0,0,0,.75);padding:8px 16px;border-radius:6px;pointer-events:none;opacity:0;transition:opacity .4s;text-align:center}
+/* --- сетевое меню --- */
+#net-panel{display:none;background:rgba(255,255,255,.05);border:1px solid #333;border-radius:10px;padding:16px;margin:14px auto;font-size:15px;color:#ccc;text-align:left;max-width:520px}
+#net-panel input{background:rgba(0,0,0,.6);border:1px solid #555;color:#fff;padding:9px 12px;border-radius:6px;font-size:15px;font-family:inherit;width:170px;margin:4px 6px 4px 0}
+#net-status{margin-top:10px;font-size:14px;color:#888;line-height:1.6;white-space:pre-line}
+.pl-list{list-style:none;margin:6px 0;padding:0}
+.pl-list li{padding:4px 8px;border-left:3px solid #ff3366;margin:4px 0;background:rgba(255,51,102,.08);font-size:14px}
+.pl-list li.me{border-left-color:#44ff66}
+.btn-green{border-color:#44ff66 !important;color:#44ff66 !important}
+.btn-green:hover{background:#44ff66;color:#000 !important}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+#players-hud{position:absolute;top:20px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.6);padding:8px 14px;border-radius:8px;font-size:13px;display:none;text-align:center;border:1px solid #333}
+#players-hud b{color:#ffcc00}
 </style>
 </head>
 <body>
@@ -59,13 +71,26 @@ letter-spacing:3px;text-shadow:0 0 12px #ff0022;display:none;animation:pulse .8s
 <h1>🌿 САД МОНСТРОВ 3D 🌿</h1>
 <h2>30 уровней лабиринта. Собери ключи, найди зелёную дверь. Монстры охотятся на тебя и на Банбана!</h2>
 <h3>🎉 БАНБАН — твой напарник: дерётся с монстрами, а они дерутся с ним. У всех есть полоски здоровья!<br>⚠ НАБНАБ ползает по стенам и потолку!</h3>
-<button class="btn" onclick="startGame()">▶ ИГРАТЬ С БАНБАНОМ</button>
+<button class="btn" onclick="startGame()">▶ ОДИНОЧНАЯ ИГРА (с Банбаном)</button>
+<button class="btn btn-green" onclick="showNetPanel()">🌐 СЕТЕВАЯ ИГРА</button>
+<div id="net-panel">
+  <div>Имя игрока: <input id="net-name" maxlength="16" placeholder="Игрок"></div>
+  <div>Адрес сервера: <input id="net-addr" placeholder="ws://localhost:8765"></div>
+  <div style="margin-top:8px">
+    <button class="btn btn-sm" id="btn-connect" onclick="netConnect()">Подключиться</button>
+    <button class="btn btn-sm" id="btn-start-multi" onclick="netStartMultiplayer()" disabled>▶ Начать игру со всеми</button>
+    <button class="btn btn-sm" id="btn-leave" onclick="netLeave()" style="display:none">Покинуть</button>
+  </div>
+  <ul class="pl-list" id="pl-list"></ul>
+  <div id="net-status">Сервер запускается командой: <b>python3 server.py</b><br>Затем все игроки открывают http://localhost:8766 и нажимают «Подключиться».</div>
+</div>
 <div class="ctrl">
 <b>← →</b> — поворот &nbsp;|&nbsp; <b>↑ ↓</b> — посмотреть вверх/вниз<br>
 <b>W A S D</b> — ходить &nbsp;|&nbsp; <b>Shift</b> — бежать<br>
 <b>E</b> — взять ключ / открыть дверь / осмотреть<br>
 <b>Мышь (зажать и тянуть)</b> — поворот &nbsp;|&nbsp; <b>P</b> — пауза<br>
-💡 Ключи лечат Банбана на +25 HP!
+💡 Ключи лечат Банбана на +25 HP!<br>
+🌐 В сетевой игре: первый подключившийся — <b>хост</b> (он начинает уровень кнопкой «Начать игру со всеми»). Все видят друг друга, монстр один на всех!
 </div>
 </div>
 </div>
@@ -85,6 +110,7 @@ letter-spacing:3px;text-shadow:0 0 12px #ff0022;display:none;animation:pulse .8s
 <div id="banban-bar-wrap"><div id="banban-bar"></div></div>
 <div id="keys-display"></div>
 <div id="msg"></div>
+<div id="players-hud"></div>
 </div>
 <div id="danger-vignette"></div>
 
@@ -159,6 +185,313 @@ var TURN_SPEED=2.3,LOOK_SPEED=1.8,SENS=0.004;
 var dragging=false,lastMX=0,lastMY=0;
 var vignetteEl,dangerTextEl,flashEl;
 var UP_VEC=new THREE.Vector3(0,1,0);
+
+/* ================= СЕТЕВОЙ РЕЖИМ ================= */
+var NET={
+  on:false,                 // сетевой режим активен
+  ws:null,                  // WebSocket
+  id:null,                  // наш id от сервера
+  name:'Игрок',
+  hostId:null,              // id хоста (сервер назначает)
+  players:[],               // [{id,name}]
+  connected:false,
+  startedRemote:false,      // получили start от хоста
+  levelSeed:0,
+  lastSent:0,
+  remote:{},                // id -> {x,z,yaw,tx,tz,ty,tname,alive,keys,totalKeys,hp}
+  remotesMesh:{}            // id -> mesh аватара
+};
+var AVATAR_COLORS=[0xff3366,0x33ccff,0xffcc00,0x44dd66,0xcc66ff,0xff8833,0x66ffee,0xff66aa];
+
+// Детерминированный ГПСЧ (mulberry32), общий для всех клиентов через seed уровня
+var _rngState=1;
+function srand(seed){_rngState=seed>>>0;}
+function rand(){
+  var t=(_rngState+=0x6D2B79F5);
+  t=Math.imul(t^(t>>>15),t|1);
+  t^=t+Math.imul(t^(t>>>7),t|61);
+  return ((t^(t>>>14))>>>0)/4294967296;
+}
+function netSend(obj){
+  if(NET.ws&&NET.ws.readyState===1){try{NET.ws.send(JSON.stringify(obj));}catch(e){}}
+}
+function isHost(){return NET.on&&NET.hostId===NET.id;}
+function myColor(){
+  for(var i=0;i<NET.players.length;i++)if(NET.players[i].id===NET.id)return AVATAR_COLORS[i%AVATAR_COLORS.length];
+  return 0xff3366;
+}
+
+/* ---------- Сетевое меню ---------- */
+function showNetPanel(){
+  var p=document.getElementById('net-panel');
+  p.style.display=p.style.display==='block'?'none':'block';
+  if(!document.getElementById('net-addr').value){
+    document.getElementById('net-addr').value='ws://'+(location.hostname||'localhost')+':8765';
+  }
+}
+function netSetStatus(t){document.getElementById('net-status').innerHTML=t;}
+function netRenderRoster(){
+  var ul=document.getElementById('pl-list');ul.innerHTML='';
+  NET.players.forEach(function(pl){
+    var li=document.createElement('li');
+    if(pl.id===NET.id)li.className='me';
+    li.textContent=pl.name+(pl.id===NET.hostId?' 👑 (хост)':'')+(pl.id===NET.id?' — это ты':'');
+    ul.appendChild(li);
+  });
+  var canStart=isHost()&&NET.connected;
+  document.getElementById('btn-start-multi').disabled=!canStart;
+  if(NET.connected&&NET.startedRemote&&!isHost()){
+    document.getElementById('btn-start-multi').disabled=false;
+    document.getElementById('btn-start-multi').textContent='⏳ Ожидание хоста...';
+  }else{
+    document.getElementById('btn-start-multi').textContent='▶ Начать игру со всеми';
+  }
+}
+function netConnect(){
+  if(NET.connected)return;
+  NET.name=(document.getElementById('net-name').value||'Игрок').trim().slice(0,16)||'Игрок';
+  var addr=document.getElementById('net-addr').value.trim()||'ws://localhost:8765';
+  netSetStatus('Подключение к '+addr+' ...');
+  var ws;
+  try{ws=new WebSocket(addr);}catch(e){netSetStatus('❌ Неверный адрес: '+e.message);return;}
+  NET.ws=ws;
+  ws.onopen=function(){
+    netSend({type:'join',name:NET.name});
+    netSetStatus('Соединение установлено.');
+  };
+  ws.onmessage=function(ev){
+    var m;try{m=JSON.parse(ev.data);}catch(e){return;}
+    handleNetMessage(m);
+  };
+  ws.onclose=function(){
+    NET.connected=false;
+    document.getElementById('btn-connect').disabled=false;
+    document.getElementById('btn-leave').style.display='none';
+    netRenderRoster();
+    if(gameState!=='menu'&&NET.on){
+      // соединение упало во время игры — возвращаем в меню
+      NET.on=false;
+      document.getElementById('hud').style.display='none';
+      document.getElementById('blocker').style.display='flex';
+      gameState='menu';
+    }
+    netSetStatus('⚠ Соединение с сервером потеряно. Запущен ли <b>python3 server.py</b>? Нажмите «Подключиться» снова.');
+  };
+  ws.onerror=function(){netSetStatus('❌ Ошибка соединения. Проверьте, что сервер запущен: <b>python3 server.py</b>');};
+  document.getElementById('btn-connect').disabled=true;
+}
+function handleNetMessage(m){
+  if(m.type==='full'){NET.connected=false;document.getElementById('btn-connect').disabled=false;netSetStatus('❌ '+m.reason);return;}
+  if(m.type==='welcome'){
+    NET.id=m.id;NET.players=m.players||[];NET.hostId=m.hostId;NET.connected=true;
+    document.getElementById('btn-leave').style.display='inline-block';
+    netSetStatus('✅ Подключено. Ваш id: '+NET.id+(isHost()?' — вы ХОСТ. Other игроки увидят вас в списке.':''));
+    netRenderRoster();
+    // если хост уже начал уровень — присоединяемся на лету
+    if(m.state&&m.state.level!==undefined&&!NET.on){
+      netJoinRunningLevel(m.state);
+    }
+    return;
+  }
+  if(m.type==='roster'){
+    NET.players=m.players||[];
+    var wasHost=isHost();
+    NET.hostId=m.hostId;
+    // удаляем аватары игроков, которые вышли
+    Object.keys(NET.remotesMesh).forEach(function(k){
+      var found=NET.players.some(function(p){return String(p.id)===k;});
+      if(!found){levelGroup.remove(NET.remotesMesh[k]);delete NET.remotesMesh[k];delete NET.remote[k];}
+    });
+    netRenderRoster();
+    if(m.hostChanged&&NET.on){
+      netSetStatus('👑 Новый хост: '+(NET.players.find(function(p){return p.id===NET.hostId;})||{name:'?'}).name);
+      showMsg('Хост сменился! Игра продолжается.',3000);
+    }
+    return;
+  }
+  if(m.type==='start'){
+    // хост объявил начало (или смену) уровня — все грузят один и тот же лабиринт по seed
+    var rejoin=(NET.on&&currentLevel===m.level); // рестарт того же уровня после смерти хоста
+    NET.on=true;
+    if(!rejoin){
+      currentLevel=m.level|0;
+      playerHP=maxHP;
+    }
+    NET.levelSeed=m.seed>>>0;
+    document.getElementById('blocker').style.display='none';
+    document.getElementById('hud').style.display='block';
+    loadLevel(currentLevel);
+    gameState='playing';
+    updatePlayersHUD();
+    flashHint(rejoin?'Хост вернулся — уровень перезагружен!':'Сетевая игра! Все ключи и дверь общие. WASD — ходьба, E — действие');
+    return;
+  }
+  if(m.type==='pos'){
+    if(m.id===NET.id)return;
+    var st=NET.remote[m.id]||(NET.remote[m.id]={x:m.x,z:m.z,yaw:m.yaw,tx:m.x,tz:m.z,ty:m.y,tname:m.name});
+    st.tx=m.x;st.tz=m.z;st.ty=m.y;st.yaw=m.yaw;st.tname=m.name;
+    st.alive=m.alive!==false;st.keys=m.keys;st.totalKeys=m.totalKeys;st.hp=m.hp;
+    ensureRemoteAvatar(m.id,st);
+    return;
+  }
+  if(m.type==='event'){
+    netHandleEvent(m);
+    return;
+  }
+}
+function netHandleEvent(m){
+  var d=m.data||{};
+  switch(m.ev){
+    case'key':
+      // кто-то (или мы) взял ключ с индексом d.keyIndex
+      netRemoveKey(d.keyIndex);
+      if(m.id!==NET.id){
+        var nm=(NET.remote[m.id]||{tname:'Игрок'}).tname||'Игрок';
+        showMsg('🔑 '+nm+' взял ключ!',1800);
+        if(banbanMesh&&!banbanMesh.userData.dead){
+          banbanMesh.userData.hp=Math.min(banbanMesh.userData.maxHp,banbanMesh.userData.hp+25);
+          drawBar(banbanMesh);updateBanbanHUD();
+        }
+      }
+      updateUI();
+      break;
+    case'dead':
+      if(m.id!==NET.id){
+        var nm2=(NET.remote[m.id]||{tname:'Игрок'}).tname||'Игрок';
+        if(NET.remote[m.id])NET.remote[m.id].alive=false;
+        showMsg('💀 '+nm2+' погиб! Ждём возрождения...',2500);
+      }
+      break;
+    case'respawn':
+      if(NET.remote[m.id]){NET.remote[m.id].alive=true;NET.remote[m.id].hp=maxHP;}
+      break;
+    case'next':
+      // хост перешёл на следующий уровень — все должны перезагрузить уровень
+      if(!isHost()&&NET.on){
+        currentLevel=d.level;
+        if(d.win){showOverlay('\u{1F3C6} ПОБЕДА!','Все 30 уровней пройдены командой!','В меню','win');gameState='paused';break;}
+        NET.levelSeed=d.seed>>>0;
+        playerHP=maxHP;
+        loadLevel(currentLevel);
+        gameState='playing';
+        updatePlayersHUD();
+      }
+      break;
+    case'host:start':
+      // кто-то из игроков просит начать игру — стартуем, только если мы хост
+      if(isHost()&&gameState==='menu'){netStartMultiplayer();}
+      break;
+  }
+}
+function netRemoveKey(idx){
+  keys3D=keys3D.filter(function(k){
+    if(k.userData.index===idx){levelGroup.remove(k);return false;}
+    return true;
+  });
+  var cnt=0;keys3D.forEach(function(){cnt++;});
+  foundKeys=Math.min(totalKeys,totalKeys-cnt);
+  for(var i=0;i<foundKeys;i++){var ki=document.getElementById('ki-'+i);if(ki)ki.classList.add('found');}
+}
+function netStartMultiplayer(){
+  if(!NET.connected)return;
+  if(isHost()){
+    NET.on=true;
+    var seed=(Math.random()*4294967295)>>>0;
+    netSend({type:'start',level:currentLevel,seed:seed});
+    startGame();
+    NET.levelSeed=seed;
+  }else{
+    // не хост: просим хоста начать (он получит event и сам стартует)
+    netSend({type:'event',ev:'host:start'});
+    netSetStatus('Ждём, пока ХОСТ (👑) начнёт игру...');
+  }
+}
+function netLeave(){
+  if(NET.ws){try{NET.ws.close();}catch(e){}}
+  NET.on=false;NET.connected=false;NET.id=null;NET.hostId=null;NET.players=[];
+  clearRemoteAvatars();
+  document.getElementById('btn-connect').disabled=false;
+  document.getElementById('btn-leave').style.display='none';
+  netRenderRoster();
+  netSetStatus('Вы покинули комнату.');
+}
+function netJoinRunningLevel(state){
+  // позднее присоединение: грузим тот же уровень по seed из снапшота хоста
+  NET.on=true;
+  currentLevel=state.level|0;
+  NET.levelSeed=(state.seed||0)>>>0;
+  playerHP=maxHP;
+  document.getElementById('blocker').style.display='none';
+  document.getElementById('hud').style.display='block';
+  loadLevel(currentLevel);
+  gameState='playing';
+  if(state.foundKeys!==undefined){
+    while(foundKeys<state.foundKeys&&keys3D.length>0){
+      levelGroup.remove(keys3D[0]);keys3D.shift();foundKeys++;
+      var ki=document.getElementById('ki-'+(foundKeys-1));if(ki)ki.classList.add('found');
+    }
+    updateUI();
+  }
+  showMsg('Вы присоединились к игре на уровне '+(currentLevel+1),2500);
+}
+function netBroadcastPos(){
+  if(!NET.on||!NET.connected)return;
+  var now=performance.now();
+  if(now-NET.lastSent<66)return; // ~15 Гц
+  NET.lastSent=now;
+  netSend({type:'pos',x:+playerPos.x.toFixed(2),y:+playerPos.y.toFixed(2),z:+playerPos.z.toFixed(2),
+    yaw:+yaw.toFixed(2),alive:playerHP>0,keys:foundKeys,totalKeys:totalKeys,hp:Math.round(playerHP)});
+}
+/* ---------- Аватары других игроков ---------- */
+function buildAvatar(color,name){
+  var g=new THREE.Group();
+  var mat=new THREE.MeshStandardMaterial({color:color,roughness:0.5,emissive:color,emissiveIntensity:0.25});
+  var bodyGeo=(typeof THREE.CapsuleGeometry==="function")?new THREE.CapsuleGeometry(0.28,0.9,6,12):new THREE.CylinderGeometry(0.28,0.28,1.2,10);
+  var body=new THREE.Mesh(bodyGeo,mat);
+  body.position.y=0.95;g.add(body);
+  var head=new THREE.Mesh(new THREE.SphereGeometry(0.24,12,10),mat);
+  head.position.y=1.8;g.add(head);
+  var eyeMat=new THREE.MeshStandardMaterial({color:0xffffff,emissive:0xffffff,emissiveIntensity:0.5});
+  var eL=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8),eyeMat);eL.position.set(-0.09,1.85,0.2);g.add(eL);
+  var eR=new THREE.Mesh(new THREE.SphereGeometry(0.05,8,8),eyeMat.clone());eR.position.set(0.09,1.85,0.2);g.add(eR);
+  var glow=new THREE.PointLight(color,0.5,5);glow.position.y=1.2;g.add(glow);
+  // табличка с именем
+  var cv=document.createElement('canvas');cv.width=256;cv.height=64;
+  var c=cv.getContext('2d');
+  c.fillStyle='rgba(0,0,0,0.6)';c.fillRect(0,0,256,64);
+  c.font='bold 30px Arial';c.textAlign='center';c.textBaseline='middle';
+  c.fillStyle='#fff';c.fillText(name,128,32);
+  var tex=new THREE.CanvasTexture(cv);
+  var spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,depthTest:false}));
+  spr.scale.set(1.8,0.45,1);spr.position.y=2.35;g.add(spr);
+  return g;
+}
+function ensureRemoteAvatar(id,st){
+  if(NET.remotesMesh[id])return;
+  var idx=-1;
+  NET.players.forEach(function(p,i){if(p.id===id)idx=i;});
+  var color=AVATAR_COLORS[(idx<0?0:idx)%AVATAR_COLORS.length];
+  var mesh=buildAvatar(color,st.tname||('Игрок '+id));
+  mesh.position.set(st.x,0,st.z);
+  levelGroup.add(mesh);
+  NET.remotesMesh[id]=mesh;
+}
+function clearRemoteAvatars(){
+  Object.keys(NET.remotesMesh).forEach(function(k){levelGroup.remove(NET.remotesMesh[k]);});
+  NET.remotesMesh={};NET.remote={};
+}
+function updateRemoteAvatars(dt){
+  Object.keys(NET.remotesMesh).forEach(function(k){
+    var mesh=NET.remotesMesh[k],st=NET.remote[k];
+    if(!st)return;
+    // плавная интерполяция к целевой позиции
+    var a=Math.min(1,dt*10);
+    mesh.position.x+=(st.tx-mesh.position.x)*a;
+    mesh.position.z+=(st.tz-mesh.position.z)*a;
+    mesh.rotation.y=st.yaw||0;
+    mesh.visible=st.alive!==false;
+  });
+}
 
 function init(){
 scene=new THREE.Scene();
@@ -237,9 +570,11 @@ function startGame(){
 document.getElementById('blocker').style.display='none';
 document.getElementById('hud').style.display='block';
 currentLevel=0;playerHP=maxHP;
+if(NET.on){NET.levelSeed=(Math.random()*4294967295)>>>0;}
 loadLevel(currentLevel);
 gameState='playing';
 flashHint('Банбан дерётся за тебя! ← → поворот | WASD ходьба | E действие');
+updatePlayersHUD();
 }
 
 function flashHint(t){
@@ -260,7 +595,7 @@ if(cc<cols-1&&!grid[cr][cc+1].visited)nb.push({r:cr,c:cc+1,dir:1});
 if(cr<rows-1&&!grid[cr+1][cc].visited)nb.push({r:cr+1,c:cc,dir:2});
 if(cc>0&&!grid[cr][cc-1].visited)nb.push({r:cr,c:cc-1,dir:3});
 if(nb.length>0){
-var n=nb[Math.floor(Math.random()*nb.length)];
+var n=nb[Math.floor(rand()*nb.length)];
 grid[cr][cc].walls[n.dir]=false;
 grid[n.r][n.c].walls[(n.dir+2)%4]=false;
 grid[n.r][n.c].visited=true;
@@ -819,8 +1154,21 @@ g.userData.parts={armL:aL,armR:aR,legL:lL,legR:lR};
 return g;
 }
 
+function updatePlayersHUD(){
+var el=document.getElementById('players-hud');
+if(!NET.on){el.style.display='none';return;}
+el.style.display='block';
+var parts=NET.players.map(function(p){
+  var st=NET.remote[p.id];
+  var hp=p.id===NET.id?Math.max(0,Math.round(playerHP)):(st&&st.hp!==undefined?st.hp:'?');
+  return (p.id===NET.hostId?'👑':'')+'<b>'+p.name+'</b>:'+hp;
+});
+el.innerHTML='🌐 Игроки: '+parts.join(' &nbsp;|&nbsp; ');
+}
+
 function loadLevel(lvl){
 var i;
+srand((NET.on?(NET.levelSeed||1):1)+(lvl+1)*7919); // детерминированная генерация для сети
 while(levelGroup.children.length>0){
 var o=levelGroup.children[0];
 levelGroup.remove(o);
@@ -878,7 +1226,7 @@ return false;
 
 for(i=0;i<totalKeys;i++){
 var kr,kc,t=0;
-do{kr=Math.floor(Math.random()*mazeSize);kc=Math.floor(Math.random()*mazeSize);t++;}
+do{kr=Math.floor(rand()*mazeSize);kc=Math.floor(rand()*mazeSize);t++;}
 while((inUsed(kr,kc)||(kr+kc)<3)&&t<300);
 used.push({r:kr,c:kc});
 var km=new THREE.Mesh(new THREE.OctahedronGeometry(0.28,0),
@@ -891,7 +1239,7 @@ kl.position.copy(km.position);levelGroup.add(kl);
 }
 
 var dr,dc,t2=0;
-do{dr=Math.floor(Math.random()*mazeSize);dc=Math.floor(Math.random()*mazeSize);t2++;}
+do{dr=Math.floor(rand()*mazeSize);dc=Math.floor(rand()*mazeSize);t2++;}
 while((inUsed(dr,dc)||(dr<2&&dc<2))&&t2<300);
 doorObj=new THREE.Mesh(new THREE.BoxGeometry(1.6,2.6,0.25),
 new THREE.MeshStandardMaterial({color:0x44ff66,emissive:0x22aa33,emissiveIntensity:0.5}));
@@ -908,18 +1256,18 @@ levelGroup.add(banbanMesh);
 
 var lampCount=Math.floor(mazeSize*mazeSize/7);
 for(i=0;i<lampCount;i++){
-var lr=Math.floor(Math.random()*mazeSize),lc=Math.floor(Math.random()*mazeSize);
+var lr=Math.floor(rand()*mazeSize),lc=Math.floor(rand()*mazeSize);
 var pl=new THREE.PointLight(0x556688,0.45,7);
 pl.position.set(lc*cellSize+cellSize/2,2.7,lr*cellSize+cellSize/2);
 levelGroup.add(pl);
 }
 for(i=0;i<lvl+3;i++){
-var pr=Math.floor(Math.random()*mazeSize),pc=Math.floor(Math.random()*mazeSize);
+var pr=Math.floor(rand()*mazeSize),pc=Math.floor(rand()*mazeSize);
 if(inUsed(pr,pc))continue;
 var mesh;
-if(Math.random()<0.5)mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.85,8),new THREE.MeshStandardMaterial({color:0x553322}));
+if(rand()<0.5)mesh=new THREE.Mesh(new THREE.CylinderGeometry(0.22,0.22,0.85,8),new THREE.MeshStandardMaterial({color:0x553322}));
 else mesh=new THREE.Mesh(new THREE.ConeGeometry(0.32,0.9,6),new THREE.MeshStandardMaterial({color:0x227733}));
-mesh.position.set(pc*cellSize+cellSize/2+(Math.random()-0.5),0.45,pr*cellSize+cellSize/2+(Math.random()-0.5));
+mesh.position.set(pc*cellSize+cellSize/2+(rand()-0.5),0.45,pr*cellSize+cellSize/2+(rand()-0.5));
 levelGroup.add(mesh);
 }
 
@@ -939,14 +1287,14 @@ else if(ch.name==='Гатобанба')g=buildGattoBanba();
 else g=buildGenericEnemy(ch);
 
 var cr2,cc3,tries=0;
-do{cr2=Math.floor(Math.random()*mazeSize);cc3=Math.floor(Math.random()*mazeSize);tries++;}
+do{cr2=Math.floor(rand()*mazeSize);cc3=Math.floor(rand()*mazeSize);tries++;}
 while((inUsedFn(cr2,cc3)||(cr2<4&&cc3<4))&&tries<300);
 g.position.set(cc3*cellSize+cellSize/2,0,cr2*cellSize+cellSize/2);
 var ud=g.userData;
 ud.type='character';
 ud.charData=ch;
 ud.homePos=g.position.clone();
-ud.time=Math.random()*100;
+ud.time=rand()*100;
 ud.speed=1.0+currentLevel*0.1;
 ud.targetPos=null;
 ud.baseY=0;
@@ -958,7 +1306,7 @@ ud.punchT=0;
 ud.dying=false;
 ud.deathT=0;
 if(ch.name==='Набнаб'){
-ud.mode='floor';ud.modeT=6+Math.random()*4;ud.blockT=0;ud.wallT=0;
+ud.mode='floor';ud.modeT=6+rand()*4;ud.blockT=0;ud.wallT=0;
 ud.tiltCur=0;ud.flipCur=1;ud.yTarget=0;ud.tiltTarget=0;ud.flipTarget=1;ud.climbDir=null;
 }
 var barY=2.9;
@@ -1007,15 +1355,42 @@ vignetteEl.style.opacity='0';dangerTextEl.style.display='none';
 function overlayAction(){
 document.getElementById('overlay').style.display='none';
 if(overlayMode==='pause'){gameState='playing';}
-else if(overlayMode==='dead'){playerHP=maxHP;loadLevel(currentLevel);gameState='playing';}
+else if(overlayMode==='dead'){
+  playerHP=maxHP;
+  if(NET.on){
+    // в сети: не перегружаем уровень (иначе все увидят сброс), а телепортируем к старту
+    netSend({type:'event',ev:'respawn'});
+    netSend({type:'state',data:{level:currentLevel,seed:NET.levelSeed,foundKeys:foundKeys,totalKeys:totalKeys}});
+    playerPos.set(cellSize/2,1.6,cellSize/2);
+    invulnTimer=2.0;
+    gameState='playing';
+    showMsg('Вы возродились у входа! Остерегайтесь монстра...',2500);
+  }else{
+    loadLevel(currentLevel);gameState='playing';
+  }
+}
 else if(overlayMode==='next'){
 currentLevel++;
-if(currentLevel>=30){showOverlay('\u{1F3C6} ПОБЕДА!','Все 30 уровней пройдены вместе с Банбаном! Сад Монстров спасён!','В меню','win');return;}
-playerHP=maxHP;loadLevel(currentLevel);gameState='playing';
+if(currentLevel>=30){
+  if(NET.on){netSend({type:'event',ev:'next',data:{level:currentLevel,win:true,seed:NET.levelSeed}});}
+  showOverlay('\u{1F3C6} ПОБЕДА!','Все 30 уровней пройдены'+(NET.on?' всей командой':'')+' вместе с Банбаном! Сад Монстров спасён!','В меню','win');return;
+}
+playerHP=maxHP;
+if(NET.on){
+  // хост генерирует новый уровень и объявляет его всем через "start"
+  NET.levelSeed=(Math.random()*4294967295)>>>0;
+  loadLevel(currentLevel);
+  gameState='playing';
+  netSend({type:'start',level:currentLevel,seed:NET.levelSeed});
+}else{
+  loadLevel(currentLevel);gameState='playing';
+}
+updatePlayersHUD();
 }else{
 document.getElementById('hud').style.display='none';
 document.getElementById('blocker').style.display='flex';
 gameState='menu';currentLevel=0;
+if(NET.on){NET.on=false;}
 }
 }
 function closeCharInfo(){document.getElementById('char-info').style.display='none';gameState='playing';}
@@ -1037,10 +1412,20 @@ showMsg('Ключ найден! ('+foundKeys+'/'+totalKeys+') Банбан +25 H
 showMsg(foundKeys>=totalKeys?'Все ключи собраны! Ищите зелёную дверь!':'Ключ найден! ('+foundKeys+'/'+totalKeys+')',2500);
 }
 updateUI();interactTarget=null;
+if(NET.on){
+// событие общее: все остальные убирают этот ключ у себя
+netSend({type:'event',ev:'key',data:{keyIndex:ud.index}});
+netSend({type:'state',data:{level:currentLevel,seed:NET.levelSeed,foundKeys:foundKeys,totalKeys:totalKeys}});
+updatePlayersHUD();
+}
 }else if(ud.type==='door'){
 if(foundKeys>=totalKeys){
-if(currentLevel>=29)showOverlay('\u{1F3C6} ПОБЕДА!','Все 30 уровней пройдены вместе с Банбаном!','В меню','win');
-else showOverlay('✅ УРОВЕНЬ '+(currentLevel+1)+' ПРОЙДЕН','Банбан доволен! Следующий враг: '+CHARS[currentLevel+1].name+' — '+CHARS[currentLevel+1].desc,'Далее →','next');
+var doorName=NET.on?(NET.players.find(function(p){return p.id===NET.id;})||{name:'Кто-то'}).name:'Банбан';
+if(currentLevel>=29){
+if(NET.on)netSend({type:'event',ev:'next',data:{level:30,win:true,seed:NET.levelSeed}});
+showOverlay('\u{1F3C6} ПОБЕДА!','Все 30 уровней пройдены'+(NET.on?' всей командой':'')+' вместе с Банбаном!','В меню','win');
+}
+else showOverlay('✅ УРОВЕНЬ '+(currentLevel+1)+' ПРОЙДЕН',(NET.on?doorName+' открыл дверь! ':'')+'Следующий враг: '+CHARS[currentLevel+1].name+' — '+CHARS[currentLevel+1].desc,'Далее →','next');
 }else showMsg('Дверь заперта. Нужно '+totalKeys+' ключей, есть '+foundKeys,2500);
 }else if(ud.type==='banban'){
 document.getElementById('ci-name').textContent='БАНБАН 🎉';
@@ -1063,6 +1448,16 @@ var box=new THREE.Box3(
 new THREE.Vector3(pos.x-radius,pos.y-1.5,pos.z-radius),
 new THREE.Vector3(pos.x+radius,pos.y+0.4,pos.z+radius));
 for(var i=0;i<wallBoxes.length;i++){if(box.intersectsBox(wallBoxes[i]))return true;}
+// столкновения с другими игроками (сетевой режим)
+if(NET.on){
+var ids=Object.keys(NET.remote);
+for(var j=0;j<ids.length;j++){
+var st=NET.remote[ids[j]];
+if(!st||st.alive===false)continue;
+var ddx=pos.x-st.tx,ddz=pos.z-st.tz;
+if(ddx*ddx+ddz*ddz<(radius+0.4)*(radius+0.4))return true;
+}
+}
 return false;
 }
 
@@ -1110,7 +1505,10 @@ flashEl.style.display='block';
 setTimeout(function(){flashEl.style.display='none';},160);
 updateUI();
 showMsg(cd.name+' атакует! HP: '+Math.max(0,playerHP),1200);
-if(playerHP<=0)showOverlay('💀 ВЫ ПОГИБЛИ',cd.name+' поймал вас на уровне '+(currentLevel+1)+'! Банбан грустит...','Заново','dead');
+if(playerHP<=0){
+if(NET.on)netSend({type:'event',ev:'dead'}); // остальные увидят, что вы погибли
+showOverlay('💀 ВЫ ПОГИБЛИ',cd.name+' поймал вас на уровне '+(currentLevel+1)+'!'+(NET.on?' Банбан и друзья продолжат бить монстра — возродитесь у входа!':' Банбан грустит...'),'Возродиться','dead');
+}
 }
 
 function damageMonster(m,amount){
@@ -1499,6 +1897,15 @@ ctx.beginPath();ctx.arc(cm.position.x*sc,cm.position.z*sc,5.5,0,6.29);ctx.stroke
 }
 });
 if(banbanMesh&&!banbanMesh.userData.dead){ctx.fillStyle='#ff8888';ctx.beginPath();ctx.arc(banbanMesh.position.x*sc,banbanMesh.position.z*sc,3,0,6.29);ctx.fill();}
+// аватары других игроков на миникарте
+if(NET.on){
+Object.keys(NET.remote).forEach(function(rid){
+var st=NET.remote[rid];if(!st||st.alive===false)return;
+var idx=-1;NET.players.forEach(function(p,i){if(String(p.id)===rid)idx=i;});
+ctx.fillStyle='#'+AVATAR_COLORS[(idx<0?0:idx)%AVATAR_COLORS.length].toString(16).padStart(6,'0');
+ctx.beginPath();ctx.arc(st.tx*sc,st.tz*sc,3.5,0,6.29);ctx.fill();
+});
+}
 ctx.restore();
 ctx.fillStyle='#fff';ctx.beginPath();ctx.arc(w/2,h/2,3,0,6.29);ctx.fill();
 }
@@ -1512,6 +1919,8 @@ updatePlayer(dt);
 updateCompanion(dt);
 updateCharacters(dt);
 checkInteractions();
+netBroadcastPos();          // рассылаем свою позицию (~15 Гц)
+updateRemoteAvatars(dt);    // плавно двигаем аватары других игроков
 keys3D.forEach(function(k){
 k.rotation.y+=dt*2.2;k.rotation.x+=dt;
 k.position.y=1.5+Math.sin(time*3+k.userData.index)*0.15;
@@ -1522,6 +1931,14 @@ doorObj.scale.set(s,s,s);
 doorObj.material.emissiveIntensity=0.4+Math.sin(time*2)*0.25;
 }
 drawMinimap();
+if(NET.on&&NET.connected){
+// хост периодически шлёт снапшот для поздно присоединяющихся
+if(isHost()&&time-(NET._lastSnap||0)>2){
+NET._lastSnap=time;
+netSend({type:'state',data:{level:currentLevel,seed:NET.levelSeed,foundKeys:foundKeys,totalKeys:totalKeys}});
+}
+if(time-(NET._lastHud||0)>0.5){NET._lastHud=time;updatePlayersHUD();}
+}
 }
 renderer.render(scene,camera);
 }
